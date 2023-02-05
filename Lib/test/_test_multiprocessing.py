@@ -2564,11 +2564,11 @@ class _TestPool(BaseTestCase):
 
     # queues inside imap should be kept short by default
     def test_imap_capacity_constrained(self):
-        source_it = iter(range(16 * self.pool.processes))
+        source_it = iter(range(16 * self.pool._processes))
         it = self.pool.imap(sqr, source_it)
         next(it)
         try:
-            self.assertLess(next(source_it), 8 * self.pool.processes)
+            self.assertLess(next(source_it), 8 * self.pool._processes)
         except StopIteration:
             self.fail("imap consumed entire source iterator")
 
