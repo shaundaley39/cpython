@@ -181,7 +181,7 @@ class Pool(object):
         return ctx.Process(*args, **kwds)
 
     def __init__(self, processes=None, initializer=None, initargs=(),
-                 maxtasksperchild=None, context=None):
+                 maxtasksperchild=None, capacity=None, context=None):
         # Attributes initialized early to make sure that they exist in
         # __del__() if __init__() raises an exception
         self._pool = []
@@ -260,6 +260,15 @@ class Pool(object):
             exitpriority=15
             )
         self._state = RUN
+        # 8 chunks of input per process is a generous default capacity.
+        # A longer queue is only needed for highly variable iterator speeds.
+        if capacity is None: 
+            self._guarded_task_capacity = 8 * self._processes
+        else:
+            self._guarded_task_capacity = capacity
+        self._guarded_task_processing = 0
+        self._guarded_task_lock = threading.Condition(threading.Lock())
+
 
     # Copy globals as function locals to make sure that they are available
     # during Python shutdown when the Pool is destroyed.
@@ -389,7 +398,12 @@ class Pool(object):
         try:
             i = -1
             for i, x in enumerate(iterable):
-                yield (result_job, i, func, (x,), {})
+                with self._tasks_processing_lock:
+                    while self._guarded_task_capacity and self._guarded_task_processing >= self._guarded_task_capacity:
+                        self._guarded_task_lock.wait(None)
+                    if self._guarded_task_capacity:
+                        self._guarded_tasks_processing += 1
+                    yield (result_job, i, func, (x,), {})
         except Exception as e:
             yield (result_job, i+1, _helper_reraises_exception, (e,), {})
 
@@ -398,6 +412,7 @@ class Pool(object):
         Equivalent of `map()` -- can be MUCH slower than `Pool.map()`.
         '''
         self._check_running()
+        self._guarded_task_processing = 0
         if chunksize == 1:
             result = IMapIterator(self)
             self._taskqueue.put(
@@ -427,6 +442,7 @@ class Pool(object):
         Like `imap()` method but ordering of results is arbitrary.
         '''
         self._check_running()
+        self._guarded_task_processing = 0
         if chunksize == 1:
             result = IMapUnorderedIterator(self)
             self._taskqueue.put(
@@ -854,6 +870,10 @@ class IMapIterator(object):
         with self._cond:
             try:
                 item = self._items.popleft()
+                with self._pool._guarded_task_lock:
+                    if self._pool is not None:
+                        self._pool._guarded_task_processing -= 1
+                        self._pool._guarded_task_lock.notify()
             except IndexError:
                 if self._index == self._length:
                     self._pool = None
@@ -861,6 +881,10 @@ class IMapIterator(object):
                 self._cond.wait(timeout)
                 try:
                     item = self._items.popleft()
+                    with self._pool._guarded_task_lock:
+                        if self._pool is not None:
+                            self._pool._guarded_task_processing -= 1
+                            self._pool._guarded_task_lock.notify()
                 except IndexError:
                     if self._index == self._length:
                         self._pool = None
