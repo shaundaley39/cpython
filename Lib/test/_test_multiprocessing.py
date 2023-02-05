@@ -2562,6 +2562,16 @@ class _TestPool(BaseTestCase):
             self.assertEqual(next(it), i*i)
         self.assertRaises(SayWhenError, it.__next__)
 
+    # queues inside imap should be kept short by default
+    def test_imap_capacity_constrained(self):
+        source_it = iter(range(16 * self.pool.processes))
+        it = self.pool.imap(sqr, source_it)
+        next(it)
+        try:
+            self.assertLess(next(source_it), 8 * self.pool.processes)
+        except StopIteration:
+            self.fail("imap consumed entire source iterator")
+
     def test_imap_unordered(self):
         it = self.pool.imap_unordered(sqr, list(range(10)))
         self.assertEqual(sorted(it), list(map(sqr, list(range(10)))))
